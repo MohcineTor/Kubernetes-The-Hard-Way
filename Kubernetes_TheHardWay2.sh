@@ -18,545 +18,240 @@ install_package() {
         echo "$cl_red [-] Installation failed$cl_df of $cl_yellow$cl_cyan $1 $cl_d"
     fi
 }
-# echo "-------------Install or update the $cl_yellow AWS CLI$cl_df----------------"
-# curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-# unzip awscliv2.zip
-# install_package sudo ./aws/install
-# sudo ./aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
-
 echo 
-echo "-------------Verify the $cl_yellow AWS CLI$cl_df version and Set a Default Compute Region and Zone----------------"
-aws --version
-AWS_REGION=us-west-1
-aws configure set default.region $AWS_REGION
-echo 
-echo "-------------Install  $cl_yellow CFSSL and CFSSLJSON$cl_df----------------"
-install_package curl -o cfssl https://storage.googleapis.com/kubernetes-the-hard-way/cfssl/1.4.1/darwin/cfssl
-install_package curl -o cfssljson https://storage.googleapis.com/kubernetes-the-hard-way/cfssl/1.4.1/darwin/cfssljson
-chmod +x cfssl cfssljson
-sudo mv cfssl cfssljson /usr/local/bin/
-cfssl version
-cfssljson --version
-echo 
-echo "-------------Install  $cl_yellow kubectl$cl_df----------------"
-install_package wget https://storage.googleapis.com/kubernetes-release/release/v1.21.0/bin/linux/amd64/kubectl
-chmod +x kubectl
-sudo mv kubectl /usr/local/bin/
-kubectl version --client
-echo 
-echo "-------------$cl_blue Networking$cl_df---------------"
-echo "-------------$cl_yellow VPC Virtual Private Cloud$cl_df----------------"
-VPC_ID=$(aws ec2 create-vpc --cidr-block 10.0.0.0/16 --output text --query 'Vpc.VpcId')
-aws ec2 create-tags --resources ${VPC_ID} --tags Key=Name,Value=kubernetes-the-hard-way
-aws ec2 modify-vpc-attribute --vpc-id ${VPC_ID} --enable-dns-support '{"Value": true}'
-aws ec2 modify-vpc-attribute --vpc-id ${VPC_ID} --enable-dns-hostnames '{"Value": true}'
-echo 
-echo "-------------$cl_yellow Subnet$cl_df----------------"
-SUBNET_ID=$(aws ec2 create-subnet \
-  --vpc-id ${VPC_ID} \
-  --cidr-block 10.0.1.0/24 \
-  --output text --query 'Subnet.SubnetId')
-aws ec2 create-tags --resources ${SUBNET_ID} --tags Key=Name,Value=kubernetes
-echo 
-echo "-------------$cl_yellow Internet Gateway$cl_df----------------"
-INTERNET_GATEWAY_ID=$(aws ec2 create-internet-gateway --output text --query 'InternetGateway.InternetGatewayId')
-aws ec2 create-tags --resources ${INTERNET_GATEWAY_ID} --tags Key=Name,Value=kubernetes
-aws ec2 attach-internet-gateway --internet-gateway-id ${INTERNET_GATEWAY_ID} --vpc-id ${VPC_ID}
-echo 
-echo "-------------$cl_yellow Route Tables$cl_df----------------"
-ROUTE_TABLE_ID=$(aws ec2 create-route-table --vpc-id ${VPC_ID} --output text --query 'RouteTable.RouteTableId')
-aws ec2 create-tags --resources ${ROUTE_TABLE_ID} --tags Key=Name,Value=kubernetes
-aws ec2 associate-route-table --route-table-id ${ROUTE_TABLE_ID} --subnet-id ${SUBNET_ID}
-aws ec2 create-route --route-table-id ${ROUTE_TABLE_ID} --destination-cidr-block 0.0.0.0/0 --gateway-id ${INTERNET_GATEWAY_ID}
-echo 
-echo "-------------$cl_yellow Security Groups (aka Firewall Rules)$cl_df----------------"
-SECURITY_GROUP_ID=$(aws ec2 create-security-group \
-  --group-name kubernetes \
-  --description "Kubernetes security group" \
-  --vpc-id ${VPC_ID} \
-  --output text --query 'GroupId')
-aws ec2 create-tags --resources ${SECURITY_GROUP_ID} --tags Key=Name,Value=kubernetes
-aws ec2 authorize-security-group-ingress --group-id ${SECURITY_GROUP_ID} --protocol all --cidr 10.0.0.0/16
-aws ec2 authorize-security-group-ingress --group-id ${SECURITY_GROUP_ID} --protocol all --cidr 10.200.0.0/16
-aws ec2 authorize-security-group-ingress --group-id ${SECURITY_GROUP_ID} --protocol tcp --port 22 --cidr 0.0.0.0/0
-aws ec2 authorize-security-group-ingress --group-id ${SECURITY_GROUP_ID} --protocol tcp --port 6443 --cidr 0.0.0.0/0
-aws ec2 authorize-security-group-ingress --group-id ${SECURITY_GROUP_ID} --protocol tcp --port 443 --cidr 0.0.0.0/0
-aws ec2 authorize-security-group-ingress --group-id ${SECURITY_GROUP_ID} --protocol icmp --port -1 --cidr 0.0.0.0/0
-echo 
-echo "-------------$cl_yellow Kubernetes Public Access - Create a Network Load Balancer$cl_df ----------------"
-  LOAD_BALANCER_ARN=$(aws elbv2 create-load-balancer \
-    --name kubernetes \
-    --subnets ${SUBNET_ID} \
-    --scheme internet-facing \
-    --type network \
-    --output text --query 'LoadBalancers[].LoadBalancerArn')
-  TARGET_GROUP_ARN=$(aws elbv2 create-target-group \
-    --name kubernetes \
-    --protocol TCP \
-    --port 6443 \
-    --vpc-id ${VPC_ID} \
-    --target-type ip \
-    --output text --query 'TargetGroups[].TargetGroupArn')
-  aws elbv2 register-targets --target-group-arn ${TARGET_GROUP_ARN} --targets Id=10.0.1.1{0,1,2}
-  aws elbv2 create-listener \
-    --load-balancer-arn ${LOAD_BALANCER_ARN} \
-    --protocol TCP \
-    --port 443 \
-    --default-actions Type=forward,TargetGroupArn=${TARGET_GROUP_ARN} \
-    --output text --query 'Listeners[].ListenerArn'
-KUBERNETES_PUBLIC_ADDRESS=$(aws elbv2 describe-load-balancers \
-  --load-balancer-arns ${LOAD_BALANCER_ARN} \
-  --output text --query 'LoadBalancers[].DNSName')
-echo 
-echo "-------------$cl_blue Compute Instances$cl_df---------------"
-echo "-------------$cl_yellow Instance Image$cl_df----------------"
-IMAGE_ID=$(aws ec2 describe-images --owners 099720109477 \
-  --output json \
-  --filters \
-  'Name=root-device-type,Values=ebs' \
-  'Name=architecture,Values=x86_64' \
-  'Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*' \
-  | jq -r '.Images|sort_by(.Name)[-1]|.ImageId')
-echo 
-echo "-------------$cl_yellow SSH Key Pair$cl_df----------------"
-aws ec2 create-key-pair --key-name kubernetes --output text --query 'KeyMaterial' > kubernetes.id_rsa
-chmod 600 kubernetes.id_rsa
-echo 
-echo "-------------$cl_yellow Kubernetes Controllers$cl_df----------------"
-for i in 0 1 2; do
-  instance_id=$(aws ec2 run-instances \
-    --associate-public-ip-address \
-    --image-id ${IMAGE_ID} \
-    --count 1 \
-    --key-name kubernetes \
-    --security-group-ids ${SECURITY_GROUP_ID} \
-    --instance-type t3.micro \
-    --private-ip-address 10.0.1.1${i} \
-    --user-data "name=controller-${i}" \
-    --subnet-id ${SUBNET_ID} \
-    --block-device-mappings='{"DeviceName": "/dev/sda1", "Ebs": { "VolumeSize": 50 }, "NoDevice": "" }' \
-    --output text --query 'Instances[].InstanceId')
-  aws ec2 modify-instance-attribute --instance-id ${instance_id} --no-source-dest-check
-  aws ec2 create-tags --resources ${instance_id} --tags "Key=Name,Value=controller-${i}"
-  echo "controller-${i} created "
-done
-echo 
-echo "-------------$cl_yellow Kubernetes Workers$cl_df----------------"
-for i in 0 1 2; do
-  instance_id=$(aws ec2 run-instances \
-    --associate-public-ip-address \
-    --image-id ${IMAGE_ID} \
-    --count 1 \
-    --key-name kubernetes \
-    --security-group-ids ${SECURITY_GROUP_ID} \
-    --instance-type t3.micro \
-    --private-ip-address 10.0.1.2${i} \
-    --user-data "name=worker-${i}|pod-cidr=10.200.${i}.0/24" \
-    --subnet-id ${SUBNET_ID} \
-    --block-device-mappings='{"DeviceName": "/dev/sda1", "Ebs": { "VolumeSize": 50 }, "NoDevice": "" }' \
-    --output text --query 'Instances[].InstanceId')
-  aws ec2 modify-instance-attribute --instance-id ${instance_id} --no-source-dest-check
-  aws ec2 create-tags --resources ${instance_id} --tags "Key=Name,Value=worker-${i}"
-  echo "worker-${i} created"
-done
-echo 
-echo "-------------$cl_blue Provisioning a CA and Generating TLS Certificates$cl_df---------------"
-echo "-------------$cl_yellow Certificate Authority$cl_df----------------"
-cat > ca-config.json <<EOF
-{
-  "signing": {
-    "default": {
-      "expiry": "8760h"
-    },
-    "profiles": {
-      "kubernetes": {
-        "usages": ["signing", "key encipherment", "server auth", "client auth"],
-        "expiry": "8760h"
-      }
-    }
-  }
-}
-EOF
-
-cat > ca-csr.json <<EOF
-{
-  "CN": "Kubernetes",
-  "key": {
-    "algo": "rsa",
-    "size": 2048
-  },
-  "names": [
-    {
-      "C": "US",
-      "L": "Portland",
-      "O": "Kubernetes",
-      "OU": "CA",
-      "ST": "Oregon"
-    }
-  ]
-}
-EOF
-
-cfssl gencert -initca ca-csr.json | cfssljson -bare ca
-echo 
-echo "-------------$cl_blue Client and Server Certificates$cl_df---------------"
-echo "-------------$cl_yellow The Admin Client Certificate$cl_df----------------"
-cat > admin-csr.json <<EOF
-{
-  "CN": "admin",
-  "key": {
-    "algo": "rsa",
-    "size": 2048
-  },
-  "names": [
-    {
-      "C": "US",
-      "L": "Portland",
-      "O": "system:masters",
-      "OU": "Kubernetes The Hard Way",
-      "ST": "Oregon"
-    }
-  ]
-}
-EOF
-
-cfssl gencert \
-  -ca=ca.pem \
-  -ca-key=ca-key.pem \
-  -config=ca-config.json \
-  -profile=kubernetes \
-  admin-csr.json | cfssljson -bare admin
-echo 
-echo "-------------$cl_yellow The Kubelet Client Certificates$cl_df----------------"
-for i in 0 1 2; do
-  instance="worker-${i}"
-  instance_hostname="ip-10-0-1-2${i}"
-  cat > ${instance}-csr.json <<EOF
-{
-  "CN": "system:node:${instance_hostname}",
-  "key": {
-    "algo": "rsa",
-    "size": 2048
-  },
-  "names": [
-    {
-      "C": "US",
-      "L": "Portland",
-      "O": "system:nodes",
-      "OU": "Kubernetes The Hard Way",
-      "ST": "Oregon"
-    }
-  ]
-}
-EOF
-
+echo "-------------$cl_blue Bootstrapping the etcd Cluster$cl_df---------------"
+echo "-------------$cl_yellow Bootstrapping an etcd Cluster Member$cl_df----------------"
+# Function to run commands on a remote server via SSH
+run_remote() {
+  instance=$1
   external_ip=$(aws ec2 describe-instances --filters \
     "Name=tag:Name,Values=${instance}" \
     "Name=instance-state-name,Values=running" \
     --output text --query 'Reservations[].Instances[].PublicIpAddress')
-
-  internal_ip=$(aws ec2 describe-instances --filters \
-    "Name=tag:Name,Values=${instance}" \
-    "Name=instance-state-name,Values=running" \
-    --output text --query 'Reservations[].Instances[].PrivateIpAddress')
-
-  cfssl gencert \
-    -ca=ca.pem \
-    -ca-key=ca-key.pem \
-    -config=ca-config.json \
-    -hostname=${instance_hostname},${external_ip},${internal_ip} \
-    -profile=kubernetes \
-    worker-${i}-csr.json | cfssljson -bare worker-${i}
-done
-echo 
-echo "-------------$cl_yellow The Controller Manager Client Certificate$cl_df----------------"
-cat > kube-controller-manager-csr.json <<EOF
-{
-  "CN": "system:kube-controller-manager",
-  "key": {
-    "algo": "rsa",
-    "size": 2048
-  },
-  "names": [
-    {
-      "C": "US",
-      "L": "Portland",
-      "O": "system:kube-controller-manager",
-      "OU": "Kubernetes The Hard Way",
-      "ST": "Oregon"
-    }
-  ]
+  echo "Executing commands on ${instance}..."
+  ssh -i kubernetes.id_rsa "ubuntu@$external_ip" "$2"
 }
-EOF
 
-cfssl gencert \
-  -ca=ca.pem \
-  -ca-key=ca-key.pem \
-  -config=ca-config.json \
-  -profile=kubernetes \
-  kube-controller-manager-csr.json | cfssljson -bare kube-controller-manager
-echo 
-echo "-------------$cl_yellow The Kube Proxy Client Certificate$cl_df----------------"
-cat > kube-proxy-csr.json <<EOF
-{
-  "CN": "system:kube-proxy",
-  "key": {
-    "algo": "rsa",
-    "size": 2048
-  },
-  "names": [
-    {
-      "C": "US",
-      "L": "Portland",
-      "O": "system:node-proxier",
-      "OU": "Kubernetes The Hard Way",
-      "ST": "Oregon"
-    }
-  ]
+# Function to bootstrap an etcd cluster member on a given instance
+bootstrap_etcd() {
+  instance=$1
+  # Download and Install etcd binaries
+  run_remote "$instance" "wget -q --show-progress --https-only --timestamping \
+    'https://github.com/etcd-io/etcd/releases/download/v3.4.15/etcd-v3.4.15-linux-amd64.tar.gz'"
+
+  run_remote "$instance" "tar -xvf etcd-v3.4.15-linux-amd64.tar.gz"
+  run_remote "$instance" "sudo mv etcd-v3.4.15-linux-amd64/etcd* /usr/local/bin/"
+
+  # Configure etcd
+  run_remote "$instance" "sudo mkdir -p /etc/etcd /var/lib/etcd"
+  run_remote "$instance" "sudo chmod 700 /var/lib/etcd"
+  run_remote "$instance" "sudo cp ca.pem kubernetes-key.pem kubernetes.pem /etc/etcd/"
+
+  INTERNAL_IP=$(run_remote "$instance" "curl -s http://169.254.169.254/latest/meta-data/local-ipv4")
+  ETCD_NAME=$(run_remote "$instance" "curl -s http://169.254.169.254/latest/user-data/ | tr '|' '\n' | grep '^name' | cut -d'=' -f2")
+
+  run_remote "$instance" "cat <<EOF | sudo tee /etc/systemd/system/etcd.service
+[Unit]
+Description=etcd
+Documentation=https://github.com/coreos
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/etcd \\
+  --name ${ETCD_NAME} \\
+  --cert-file=/etc/etcd/kubernetes.pem \\
+  --key-file=/etc/etcd/kubernetes-key.pem \\
+  --peer-cert-file=/etc/etcd/kubernetes.pem \\
+  --peer-key-file=/etc/etcd/kubernetes-key.pem \\
+  --trusted-ca-file=/etc/etcd/ca.pem \\
+  --peer-trusted-ca-file=/etc/etcd/ca.pem \\
+  --peer-client-cert-auth \\
+  --client-cert-auth \\
+  --initial-advertise-peer-urls https://${INTERNAL_IP}:2380 \\
+  --listen-peer-urls https://${INTERNAL_IP}:2380 \\
+  --listen-client-urls https://${INTERNAL_IP}:2379,https://127.0.0.1:2379 \\
+  --advertise-client-urls https://${INTERNAL_IP}:2379 \\
+  --initial-cluster-token etcd-cluster-0 \\
+  --initial-cluster controller-0=https://10.0.1.10:2380,controller-1=https://10.0.1.11:2380,controller-2=https://10.0.1.12:2380 \\
+  --initial-cluster-state new \\
+  --data-dir=/var/lib/etcd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF"
+
+  # Start etcd
+  run_remote "$instance" "sudo systemctl daemon-reload"
+  run_remote "$instance" "sudo systemctl enable etcd"
+  run_remote "$instance" "sudo systemctl start etcd"
 }
-EOF
 
-cfssl gencert \
-  -ca=ca.pem \
-  -ca-key=ca-key.pem \
-  -config=ca-config.json \
-  -profile=kubernetes \
-  kube-proxy-csr.json | cfssljson -bare kube-proxy
-echo 
-echo "-------------$cl_yellow The Scheduler Client Certificate$cl_df----------------"
-cat > kube-scheduler-csr.json <<EOF
-{
-  "CN": "system:kube-scheduler",
-  "key": {
-    "algo": "rsa",
-    "size": 2048
-  },
-  "names": [
-    {
-      "C": "US",
-      "L": "Portland",
-      "O": "system:kube-scheduler",
-      "OU": "Kubernetes The Hard Way",
-      "ST": "Oregon"
-    }
-  ]
+# Verification
+verify_etcd() {
+  instance=$1
+  run_remote "$instance" "sudo ETCDCTL_API=3 etcdctl member list \
+    --endpoints=https://127.0.0.1:2379 \
+    --cacert=/etc/etcd/ca.pem \
+    --cert=/etc/etcd/kubernetes.pem \
+    --key=/etc/etcd/kubernetes-key.pem"
 }
-EOF
 
-cfssl gencert \
-  -ca=ca.pem \
-  -ca-key=ca-key.pem \
-  -config=ca-config.json \
-  -profile=kubernetes \
-  kube-scheduler-csr.json | cfssljson -bare kube-scheduler
-echo 
-echo "-------------$cl_yellow The Kubernetes API Server Certificate$cl_df----------------"
-KUBERNETES_HOSTNAMES=kubernetes,kubernetes.default,kubernetes.default.svc,kubernetes.default.svc.cluster,kubernetes.svc.cluster.local
-cat > kubernetes-csr.json <<EOF
-{
-  "CN": "kubernetes",
-  "key": {
-    "algo": "rsa",
-    "size": 2048
-  },
-  "names": [
-    {
-      "C": "US",
-      "L": "Portland",
-      "O": "Kubernetes",
-      "OU": "Kubernetes The Hard Way",
-      "ST": "Oregon"
-    }
-  ]
-}
-EOF
-
-cfssl gencert \
-  -ca=ca.pem \
-  -ca-key=ca-key.pem \
-  -config=ca-config.json \
-  -hostname=10.32.0.1,10.0.1.10,10.0.1.11,10.0.1.12,${KUBERNETES_PUBLIC_ADDRESS},127.0.0.1,${KUBERNETES_HOSTNAMES} \
-  -profile=kubernetes \
-  kubernetes-csr.json | cfssljson -bare kubernetes
-echo 
-echo "-------------$cl_yellow The Service Account Key Pair$cl_df----------------"
-cat > service-account-csr.json <<EOF
-{
-  "CN": "service-accounts",
-  "key": {
-    "algo": "rsa",
-    "size": 2048
-  },
-  "names": [
-    {
-      "C": "US",
-      "L": "Portland",
-      "O": "Kubernetes",
-      "OU": "Kubernetes The Hard Way",
-      "ST": "Oregon"
-    }
-  ]
-}
-EOF
-
-cfssl gencert \
-  -ca=ca.pem \
-  -ca-key=ca-key.pem \
-  -config=ca-config.json \
-  -profile=kubernetes \
-  service-account-csr.json | cfssljson -bare service-account
-echo 
-echo "-------------$cl_yellow Distribute the Client and Server Certificates$cl_df----------------"
-for instance in worker-0 worker-1 worker-2; do
-  external_ip=$(aws ec2 describe-instances --filters \
-    "Name=tag:Name,Values=${instance}" \
-    "Name=instance-state-name,Values=running" \
-    --output text --query 'Reservations[].Instances[].PublicIpAddress')
-
-  scp -i kubernetes.id_rsa ca.pem ${instance}-key.pem ${instance}.pem ubuntu@${external_ip}:~/
-done
-echo "Copy the appropriate certificates and private keys to each worker instance $cl_green[+] done$cl_df"
-echo
+# Loop through each controller instance
 for instance in controller-0 controller-1 controller-2; do
-  external_ip=$(aws ec2 describe-instances --filters \
-    "Name=tag:Name,Values=${instance}" \
-    "Name=instance-state-name,Values=running" \
-    --output text --query 'Reservations[].Instances[].PublicIpAddress')
-
-  scp -i kubernetes.id_rsa \
-    ca.pem ca-key.pem kubernetes-key.pem kubernetes.pem \
-    service-account-key.pem service-account.pem ubuntu@${external_ip}:~/
-done
-echo "Copy the appropriate certificates and private keys to each worker instance $cl_green[+] done$cl_df"
-echo
-echo "-------------$cl_blue Client Authentication Configs$cl_df---------------"
-echo "-------------$cl_yellow Kubernetes Public DNS Address$cl_df----------------"
-KUBERNETES_PUBLIC_ADDRESS=$(aws elbv2 describe-load-balancers \
-  --load-balancer-arns ${LOAD_BALANCER_ARN} \
-  --output text --query 'LoadBalancers[0].DNSName')
-echo 
-echo "-------------$cl_yellow The kubelet Kubernetes Configuration File$cl_df----------------"
-for instance in worker-0 worker-1 worker-2; do
-  kubectl config set-cluster kubernetes-the-hard-way \
-    --certificate-authority=ca.pem \
-    --embed-certs=true \
-    --server=https://${KUBERNETES_PUBLIC_ADDRESS}:443 \
-    --kubeconfig=${instance}.kubeconfig
-
-  kubectl config set-credentials system:node:${instance} \
-    --client-certificate=${instance}.pem \
-    --client-key=${instance}-key.pem \
-    --embed-certs=true \
-    --kubeconfig=${instance}.kubeconfig
-
-  kubectl config set-context default \
-    --cluster=kubernetes-the-hard-way \
-    --user=system:node:${instance} \
-    --kubeconfig=${instance}.kubeconfig
-
-  kubectl config use-context default --kubeconfig=${instance}.kubeconfig
+  bootstrap_etcd "$instance"
+  verify_etcd "$instance"
 done
 echo 
-echo "-------------$cl_yellow The kube-proxy Kubernetes Configuration File$cl_df----------------"
-kubectl config set-cluster kubernetes-the-hard-way \
-  --certificate-authority=ca.pem \
-  --embed-certs=true \
-  --server=https://${KUBERNETES_PUBLIC_ADDRESS}:443 \
-  --kubeconfig=kube-proxy.kubeconfig
+echo "-------------$cl_blue Bootstrapping the Kubernetes Control Plane$cl_df---------------"
+echo "-------------$cl_yellow Provision the Kubernetes Control Plane$cl_df----------------"
+# Function to bootstrap the Kubernetes control plane on a given instance
+bootstrap_kubernetes() {
+  instance=$1
 
-kubectl config set-credentials system:kube-proxy \
-  --client-certificate=kube-proxy.pem \
-  --client-key=kube-proxy-key.pem \
-  --embed-certs=true \
-  --kubeconfig=kube-proxy.kubeconfig
+  # Create Kubernetes configuration directory
+  run_remote "$instance" "sudo mkdir -p /etc/kubernetes/config"
 
-kubectl config set-context default \
-  --cluster=kubernetes-the-hard-way \
-  --user=system:kube-proxy \
-  --kubeconfig=kube-proxy.kubeconfig
+  # Download and install Kubernetes Controller Binaries
+  run_remote "$instance" "wget -q --show-progress --https-only --timestamping \
+    \"https://storage.googleapis.com/kubernetes-release/release/v1.21.0/bin/linux/amd64/kube-apiserver\" \
+    \"https://storage.googleapis.com/kubernetes-release/release/v1.21.0/bin/linux/amd64/kube-controller-manager\" \
+    \"https://storage.googleapis.com/kubernetes-release/release/v1.21.0/bin/linux/amd64/kube-scheduler\" \
+    \"https://storage.googleapis.com/kubernetes-release/release/v1.21.0/bin/linux/amd64/kubectl\""
 
-kubectl config use-context default --kubeconfig=kube-proxy.kubeconfig
-echo 
-echo "-------------$cl_yellow The kube-controller-manager Kubernetes Configuration File$cl_df----------------"
-kubectl config set-cluster kubernetes-the-hard-way \
-  --certificate-authority=ca.pem \
-  --embed-certs=true \
-  --server=https://127.0.0.1:6443 \
-  --kubeconfig=kube-controller-manager.kubeconfig
+  run_remote "$instance" "chmod +x kube-apiserver kube-controller-manager kube-scheduler kubectl"
+  run_remote "$instance" "sudo mv kube-apiserver kube-controller-manager kube-scheduler kubectl /usr/local/bin/"
 
-kubectl config set-credentials system:kube-controller-manager \
-  --client-certificate=kube-controller-manager.pem \
-  --client-key=kube-controller-manager-key.pem \
-  --embed-certs=true \
-  --kubeconfig=kube-controller-manager.kubeconfig
+  # Configure Kubernetes API Server
+  run_remote "$instance" "sudo mkdir -p /var/lib/kubernetes/"
+  run_remote "$instance" "sudo mv ca.pem ca-key.pem kubernetes-key.pem kubernetes.pem \
+    service-account-key.pem service-account.pem \
+    encryption-config.yaml /var/lib/kubernetes/"
 
-kubectl config set-context default \
-  --cluster=kubernetes-the-hard-way \
-  --user=system:kube-controller-manager \
-  --kubeconfig=kube-controller-manager.kubeconfig
+  INTERNAL_IP=$(run_remote "$instance" "curl -s http://169.254.169.254/latest/meta-data/local-ipv4")
 
-kubectl config use-context default --kubeconfig=kube-controller-manager.kubeconfig
-echo 
-echo "-------------$cl_yellow The kube-scheduler Kubernetes Configuration File$cl_df----------------"
-kubectl config set-cluster kubernetes-the-hard-way \
-  --certificate-authority=ca.pem \
-  --embed-certs=true \
-  --server=https://127.0.0.1:6443 \
-  --kubeconfig=kube-scheduler.kubeconfig
+  # Create kube-apiserver.service systemd unit file
+  run_remote "$instance" "cat <<EOF | sudo tee /etc/systemd/system/kube-apiserver.service
+[Unit]
+Description=Kubernetes API Server
+Documentation=https://github.com/kubernetes/kubernetes
 
-kubectl config set-credentials system:kube-scheduler \
-  --client-certificate=kube-scheduler.pem \
-  --client-key=kube-scheduler-key.pem \
-  --embed-certs=true \
-  --kubeconfig=kube-scheduler.kubeconfig
+[Service]
+ExecStart=/usr/local/bin/kube-apiserver \\
+  --advertise-address=${INTERNAL_IP} \\
+  --allow-privileged=true \\
+  --apiserver-count=3 \\
+  --audit-log-maxage=30 \\
+  --audit-log-maxbackup=3 \\
+  --audit-log-maxsize=100 \\
+  --audit-log-path=/var/log/audit.log \\
+  --authorization-mode=Node,RBAC \\
+  --bind-address=0.0.0.0 \\
+  --client-ca-file=/var/lib/kubernetes/ca.pem \\
+  --enable-admission-plugins=NamespaceLifecycle,NodeRestriction,LimitRanger,ServiceAccount,DefaultStorageClass,ResourceQuota \\
+  --etcd-cafile=/var/lib/kubernetes/ca.pem \\
+  --etcd-certfile=/var/lib/kubernetes/kubernetes.pem \\
+  --etcd-keyfile=/var/lib/kubernetes/kubernetes-key.pem \\
+  --etcd-servers=https://10.0.1.10:2379,https://10.0.1.11:2379,https://10.0.1.12:2379 \\
+  --event-ttl=1h \\
+  --encryption-provider-config=/var/lib/kubernetes/encryption-config.yaml \\
+  --kubelet-certificate-authority=/var/lib/kubernetes/ca.pem \\
+  --kubelet-client-certificate=/var/lib/kubernetes/kubernetes.pem \\
+  --kubelet-client-key=/var/lib/kubernetes/kubernetes-key.pem \\
+  --runtime-config='api/all=true' \\
+  --service-account-key-file=/var/lib/kubernetes/service-account.pem \\
+  --service-account-signing-key-file=/var/lib/kubernetes/service-account-key.pem \\
+  --service-account-issuer=https://${KUBERNETES_PUBLIC_ADDRESS}:443 \\
+  --service-cluster-ip-range=10.32.0.0/24 \\
+  --service-node-port-range=30000-32767 \\
+  --tls-cert-file=/var/lib/kubernetes/kubernetes.pem \\
+  --tls-private-key-file=/var/lib/kubernetes/kubernetes-key.pem \\
+  --v=2
+Restart=on-failure
+RestartSec=5
 
-kubectl config set-context default \
-  --cluster=kubernetes-the-hard-way \
-  --user=system:kube-scheduler \
-  --kubeconfig=kube-scheduler.kubeconfig
+[Install]
+WantedBy=multi-user.target
+EOF"
 
-kubectl config use-context default --kubeconfig=kube-scheduler.kubeconfig
-echo 
-echo "-------------$cl_yellow The admin Kubernetes Configuration File$cl_df----------------"
-kubectl config set-cluster kubernetes-the-hard-way \
-  --certificate-authority=ca.pem \
-  --embed-certs=true \
-  --server=https://127.0.0.1:6443 \
-  --kubeconfig=admin.kubeconfig
+  # Configure Kubernetes Controller Manager
+  run_remote "$instance" "sudo mv kube-controller-manager.kubeconfig /var/lib/kubernetes/"
 
-kubectl config set-credentials admin \
-  --client-certificate=admin.pem \
-  --client-key=admin-key.pem \
-  --embed-certs=true \
-  --kubeconfig=admin.kubeconfig
+  # Create kube-controller-manager.service systemd unit file
+  run_remote "$instance" "cat <<EOF | sudo tee /etc/systemd/system/kube-controller-manager.service
+[Unit]
+Description=Kubernetes Controller Manager
+Documentation=https://github.com/kubernetes/kubernetes
 
-kubectl config set-context default \
-  --cluster=kubernetes-the-hard-way \
-  --user=admin \
-  --kubeconfig=admin.kubeconfig
+[Service]
+ExecStart=/usr/local/bin/kube-controller-manager \\
+  --bind-address=0.0.0.0 \\
+  --cluster-cidr=10.200.0.0/16 \\
+  --cluster-name=kubernetes \\
+  --cluster-signing-cert-file=/var/lib/kubernetes/ca.pem \\
+  --cluster-signing-key-file=/var/lib/kubernetes/ca-key.pem \\
+  --kubeconfig=/var/lib/kubernetes/kube-controller-manager.kubeconfig \\
+  --leader-elect=true \\
+  --root-ca-file=/var/lib/kubernetes/ca.pem \\
+  --service-account-private-key-file=/var/lib/kubernetes/service-account-key.pem \\
+  --service-cluster-ip-range=10.32.0.0/24 \\
+  --use-service-account-credentials=true \\
+  --v=2
+Restart=on-failure
+RestartSec=5
 
-kubectl config use-context default --kubeconfig=admin.kubeconfig
-echo 
-echo "-------------$cl_yellow Distribute the Kubernetes Configuration Files$cl_df----------------"
-for instance in worker-0 worker-1 worker-2; do
-  external_ip=$(aws ec2 describe-instances --filters \
-    "Name=tag:Name,Values=${instance}" \
-    "Name=instance-state-name,Values=running" \
-    --output text --query 'Reservations[].Instances[].PublicIpAddress')
+[Install]
+WantedBy=multi-user.target
+EOF"
 
-  scp -i kubernetes.id_rsa \
-    ${instance}.kubeconfig kube-proxy.kubeconfig ubuntu@${external_ip}:~/
-done
-echo "Copy the appropriate kubelet and kube-proxy kubeconfig files to each worker instance $cl_green[+] done$cl_df"
-echo
+  # Configure Kubernetes Scheduler
+  run_remote "$instance" "sudo mv kube-scheduler.kubeconfig /var/lib/kubernetes/"
+
+  # Create kube-scheduler.yaml configuration file
+  run_remote "$instance" "cat <<EOF | sudo tee /etc/kubernetes/config/kube-scheduler.yaml
+apiVersion: kubescheduler.config.k8s.io/v1beta1
+kind: KubeSchedulerConfiguration
+clientConnection:
+  kubeconfig: \"/var/lib/kubernetes/kube-scheduler.kubeconfig\"
+leaderElection:
+  leaderElect: true
+EOF"
+
+  # Create kube-scheduler.service systemd unit file
+  run_remote "$instance" "cat <<EOF | sudo tee /etc/systemd/system/kube-scheduler.service
+[Unit]
+Description=Kubernetes Scheduler
+Documentation=https://github.com/kubernetes/kubernetes
+
+[Service]
+ExecStart=/usr/local/bin/kube-scheduler \\
+  --config=/etc/kubernetes/config/kube-scheduler.yaml \\
+  --v=2
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF"
+
+  # Start the Controller Services
+  run_remote "$instance" "sudo systemctl daemon-reload"
+  run_remote "$instance" "sudo systemctl enable kube-apiserver kube-controller-manager kube-scheduler"
+  run_remote "$instance" "sudo systemctl start kube-apiserver kube-controller-manager kube-scheduler"
+  # Add Host File Entries
+  run_remote "$instance" "cat <<EOF | sudo tee -a /etc/hosts
+10.0.1.20 ip-10-0-1-20
+10.0.1.21 ip-10-0-1-21
+10.0.1.22 ip-10-0-1-22
+EOF"
+}
+
+# Run the script for each controller instance
 for instance in controller-0 controller-1 controller-2; do
-  external_ip=$(aws ec2 describe-instances --filters \
-    "Name=tag:Name,Values=${instance}" \
-    "Name=instance-state-name,Values=running" \
-    --output text --query 'Reservations[].Instances[].PublicIpAddress')
-  
-  scp -i kubernetes.id_rsa \
-    admin.kubeconfig kube-controller-manager.kubeconfig kube-scheduler.kubeconfig ubuntu@${external_ip}:~/
+  bootstrap_kubernetes "$instance"
 done
-echo "Copy the appropriate kube-controller-manager and kube-scheduler kubeconfig files to each controller instance $cl_green[+] done$cl_df"
-echo
+
+# Verification
+echo "Allow up to 10 seconds for the Kubernetes API Server to fully initialize."
+run_remote "controller-0" "kubectl cluster-info --kubeconfig admin.kubeconfig"

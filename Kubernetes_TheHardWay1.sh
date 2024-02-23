@@ -18,16 +18,16 @@ install_package() {
         echo "$cl_red [-] Installation failed$cl_df of $cl_yellow$cl_cyan $1 $cl_d"
     fi
 }
-# echo "-------------Install or update the $cl_yellow AWS CLI$cl_df----------------"
-# curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-# unzip awscliv2.zip
-# install_package sudo ./aws/install
-# sudo ./aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
+echo "-------------Install or update the $cl_yellow AWS CLI$cl_df----------------"
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+install_package sudo ./aws/install
+sudo ./aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
 
 echo 
 echo "-------------Verify the $cl_yellow AWS CLI$cl_df version and Set a Default Compute Region and Zone----------------"
 aws --version
-AWS_REGION=us-west-1
+AWS_REGION=us-east-1
 aws configure set default.region $AWS_REGION
 echo 
 echo "-------------Install  $cl_yellow CFSSL and CFSSLJSON$cl_df----------------"
@@ -50,6 +50,7 @@ VPC_ID=$(aws ec2 create-vpc --cidr-block 10.0.0.0/16 --output text --query 'Vpc.
 aws ec2 create-tags --resources ${VPC_ID} --tags Key=Name,Value=kubernetes-the-hard-way
 aws ec2 modify-vpc-attribute --vpc-id ${VPC_ID} --enable-dns-support '{"Value": true}'
 aws ec2 modify-vpc-attribute --vpc-id ${VPC_ID} --enable-dns-hostnames '{"Value": true}'
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow Subnet$cl_df----------------"
 SUBNET_ID=$(aws ec2 create-subnet \
@@ -57,17 +58,20 @@ SUBNET_ID=$(aws ec2 create-subnet \
   --cidr-block 10.0.1.0/24 \
   --output text --query 'Subnet.SubnetId')
 aws ec2 create-tags --resources ${SUBNET_ID} --tags Key=Name,Value=kubernetes
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow Internet Gateway$cl_df----------------"
 INTERNET_GATEWAY_ID=$(aws ec2 create-internet-gateway --output text --query 'InternetGateway.InternetGatewayId')
 aws ec2 create-tags --resources ${INTERNET_GATEWAY_ID} --tags Key=Name,Value=kubernetes
 aws ec2 attach-internet-gateway --internet-gateway-id ${INTERNET_GATEWAY_ID} --vpc-id ${VPC_ID}
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow Route Tables$cl_df----------------"
 ROUTE_TABLE_ID=$(aws ec2 create-route-table --vpc-id ${VPC_ID} --output text --query 'RouteTable.RouteTableId')
 aws ec2 create-tags --resources ${ROUTE_TABLE_ID} --tags Key=Name,Value=kubernetes
 aws ec2 associate-route-table --route-table-id ${ROUTE_TABLE_ID} --subnet-id ${SUBNET_ID}
 aws ec2 create-route --route-table-id ${ROUTE_TABLE_ID} --destination-cidr-block 0.0.0.0/0 --gateway-id ${INTERNET_GATEWAY_ID}
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow Security Groups (aka Firewall Rules)$cl_df----------------"
 SECURITY_GROUP_ID=$(aws ec2 create-security-group \
@@ -82,6 +86,7 @@ aws ec2 authorize-security-group-ingress --group-id ${SECURITY_GROUP_ID} --proto
 aws ec2 authorize-security-group-ingress --group-id ${SECURITY_GROUP_ID} --protocol tcp --port 6443 --cidr 0.0.0.0/0
 aws ec2 authorize-security-group-ingress --group-id ${SECURITY_GROUP_ID} --protocol tcp --port 443 --cidr 0.0.0.0/0
 aws ec2 authorize-security-group-ingress --group-id ${SECURITY_GROUP_ID} --protocol icmp --port -1 --cidr 0.0.0.0/0
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow Kubernetes Public Access - Create a Network Load Balancer$cl_df ----------------"
   LOAD_BALANCER_ARN=$(aws elbv2 create-load-balancer \
@@ -107,6 +112,7 @@ echo "-------------$cl_yellow Kubernetes Public Access - Create a Network Load B
 KUBERNETES_PUBLIC_ADDRESS=$(aws elbv2 describe-load-balancers \
   --load-balancer-arns ${LOAD_BALANCER_ARN} \
   --output text --query 'LoadBalancers[].DNSName')
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_blue Compute Instances$cl_df---------------"
 echo "-------------$cl_yellow Instance Image$cl_df----------------"
@@ -117,10 +123,12 @@ IMAGE_ID=$(aws ec2 describe-images --owners 099720109477 \
   'Name=architecture,Values=x86_64' \
   'Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*' \
   | jq -r '.Images|sort_by(.Name)[-1]|.ImageId')
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow SSH Key Pair$cl_df----------------"
 aws ec2 create-key-pair --key-name kubernetes --output text --query 'KeyMaterial' > kubernetes.id_rsa
 chmod 600 kubernetes.id_rsa
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow Kubernetes Controllers$cl_df----------------"
 for i in 0 1 2; do
@@ -140,6 +148,7 @@ for i in 0 1 2; do
   aws ec2 create-tags --resources ${instance_id} --tags "Key=Name,Value=controller-${i}"
   echo "controller-${i} created "
 done
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow Kubernetes Workers$cl_df----------------"
 for i in 0 1 2; do
@@ -159,6 +168,7 @@ for i in 0 1 2; do
   aws ec2 create-tags --resources ${instance_id} --tags "Key=Name,Value=worker-${i}"
   echo "worker-${i} created"
 done
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_blue Provisioning a CA and Generating TLS Certificates$cl_df---------------"
 echo "-------------$cl_yellow Certificate Authority$cl_df----------------"
@@ -198,6 +208,7 @@ cat > ca-csr.json <<EOF
 EOF
 
 cfssl gencert -initca ca-csr.json | cfssljson -bare ca
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_blue Client and Server Certificates$cl_df---------------"
 echo "-------------$cl_yellow The Admin Client Certificate$cl_df----------------"
@@ -226,6 +237,7 @@ cfssl gencert \
   -config=ca-config.json \
   -profile=kubernetes \
   admin-csr.json | cfssljson -bare admin
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow The Kubelet Client Certificates$cl_df----------------"
 for i in 0 1 2; do
@@ -268,6 +280,7 @@ EOF
     -profile=kubernetes \
     worker-${i}-csr.json | cfssljson -bare worker-${i}
 done
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow The Controller Manager Client Certificate$cl_df----------------"
 cat > kube-controller-manager-csr.json <<EOF
@@ -295,6 +308,7 @@ cfssl gencert \
   -config=ca-config.json \
   -profile=kubernetes \
   kube-controller-manager-csr.json | cfssljson -bare kube-controller-manager
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow The Kube Proxy Client Certificate$cl_df----------------"
 cat > kube-proxy-csr.json <<EOF
@@ -322,6 +336,7 @@ cfssl gencert \
   -config=ca-config.json \
   -profile=kubernetes \
   kube-proxy-csr.json | cfssljson -bare kube-proxy
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow The Scheduler Client Certificate$cl_df----------------"
 cat > kube-scheduler-csr.json <<EOF
@@ -349,6 +364,7 @@ cfssl gencert \
   -config=ca-config.json \
   -profile=kubernetes \
   kube-scheduler-csr.json | cfssljson -bare kube-scheduler
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow The Kubernetes API Server Certificate$cl_df----------------"
 KUBERNETES_HOSTNAMES=kubernetes,kubernetes.default,kubernetes.default.svc,kubernetes.default.svc.cluster,kubernetes.svc.cluster.local
@@ -378,6 +394,7 @@ cfssl gencert \
   -hostname=10.32.0.1,10.0.1.10,10.0.1.11,10.0.1.12,${KUBERNETES_PUBLIC_ADDRESS},127.0.0.1,${KUBERNETES_HOSTNAMES} \
   -profile=kubernetes \
   kubernetes-csr.json | cfssljson -bare kubernetes
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow The Service Account Key Pair$cl_df----------------"
 cat > service-account-csr.json <<EOF
@@ -405,6 +422,7 @@ cfssl gencert \
   -config=ca-config.json \
   -profile=kubernetes \
   service-account-csr.json | cfssljson -bare service-account
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow Distribute the Client and Server Certificates$cl_df----------------"
 for instance in worker-0 worker-1 worker-2; do
@@ -434,6 +452,7 @@ echo "-------------$cl_yellow Kubernetes Public DNS Address$cl_df---------------
 KUBERNETES_PUBLIC_ADDRESS=$(aws elbv2 describe-load-balancers \
   --load-balancer-arns ${LOAD_BALANCER_ARN} \
   --output text --query 'LoadBalancers[0].DNSName')
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow The kubelet Kubernetes Configuration File$cl_df----------------"
 for instance in worker-0 worker-1 worker-2; do
@@ -456,6 +475,7 @@ for instance in worker-0 worker-1 worker-2; do
 
   kubectl config use-context default --kubeconfig=${instance}.kubeconfig
 done
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow The kube-proxy Kubernetes Configuration File$cl_df----------------"
 kubectl config set-cluster kubernetes-the-hard-way \
@@ -476,6 +496,7 @@ kubectl config set-context default \
   --kubeconfig=kube-proxy.kubeconfig
 
 kubectl config use-context default --kubeconfig=kube-proxy.kubeconfig
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow The kube-controller-manager Kubernetes Configuration File$cl_df----------------"
 kubectl config set-cluster kubernetes-the-hard-way \
@@ -496,6 +517,7 @@ kubectl config set-context default \
   --kubeconfig=kube-controller-manager.kubeconfig
 
 kubectl config use-context default --kubeconfig=kube-controller-manager.kubeconfig
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow The kube-scheduler Kubernetes Configuration File$cl_df----------------"
 kubectl config set-cluster kubernetes-the-hard-way \
@@ -516,6 +538,7 @@ kubectl config set-context default \
   --kubeconfig=kube-scheduler.kubeconfig
 
 kubectl config use-context default --kubeconfig=kube-scheduler.kubeconfig
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow The admin Kubernetes Configuration File$cl_df----------------"
 kubectl config set-cluster kubernetes-the-hard-way \
@@ -536,6 +559,7 @@ kubectl config set-context default \
   --kubeconfig=admin.kubeconfig
 
 kubectl config use-context default --kubeconfig=admin.kubeconfig
+echo "$cl_green DONE$cl_df"
 echo 
 echo "-------------$cl_yellow Distribute the Kubernetes Configuration Files$cl_df----------------"
 for instance in worker-0 worker-1 worker-2; do
